@@ -1,0 +1,18 @@
+{
+  "name": "cfactory-demo",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "^1.3.14"
+  },
+  "peerDependencies": {
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@prisma/client": "5.22.0",
+    "bullmq": "^5.80.9",
+    "hono": "^4.12.31",
+    "ioredis": "^5.11.1",
+    "prisma": "5.22.0"
+  }
+}
