@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { serveStatic } from "hono/bun";
+import { trimTrailingSlash } from "hono/trailing-slash";
 import { createBullBoard } from "@bull-board/api";
 import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
 import { HonoAdapter } from "@bull-board/hono";
@@ -11,8 +12,86 @@ import { saveUpload } from "./upload";
 
 const app = new Hono();
 app.use("/*", cors());
+app.use(trimTrailingSlash());
 
-// Bull Board
+// ponytail: session-based auth for /admin/* — login form, cookie, redirect
+const ADMIN_USER = process.env.ADMIN_USER;
+const ADMIN_PASS = process.env.ADMIN_PASS;
+if (!ADMIN_USER || !ADMIN_PASS) {
+  throw new Error("ADMIN_USER and ADMIN_PASS env vars required for auth");
+}
+
+// simple in-memory session store: true = authenticated
+const sessions = new Map<string, boolean>();
+
+app.get("/admin/login", (c) => {
+  const html = `<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login — cfactory admin</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1C1917; color: #fff; font-family: 'Inter', system-ui, sans-serif;
+      display: flex; align-items: center; justify-content: center; min-height: 100vh;
+    }
+    form {
+      background: #292524; padding: 2rem; border-radius: 8px; width: 320px;
+      display: flex; flex-direction: column; gap: 1rem;
+    }
+    h1 { font-size: 1.25rem; font-weight: 600; text-align: center; color: #EA580C; }
+    input {
+      background: #1C1917; border: 1px solid #444; color: #fff; padding: 0.625rem 0.75rem;
+      border-radius: 6px; font-size: 0.875rem; outline: none;
+    }
+    input:focus { border-color: #EA580C; }
+    button {
+      background: #EA580C; color: #fff; border: none; padding: 0.625rem; border-radius: 6px;
+      font-size: 0.875rem; font-weight: 600; cursor: pointer;
+    }
+    button:hover { background: #D24E00; }
+    .error { color: #f87171; font-size: 0.8rem; text-align: center; }
+  </style>
+</head>
+<body>
+  <form method="post" action="/admin/login">
+    <h1>cfactory admin</h1>
+    <input type="text" name="username" placeholder="Username" required autocomplete="username">
+    <input type="password" name="password" placeholder="Password" required autocomplete="current-password">
+    <button type="submit">Masuk</button>
+    ${c.req.query("error") ? '<p class="error">Username atau password salah</p>' : ""}
+  </form>
+</body>
+</html>`;
+  return c.html(html);
+});
+
+app.post("/admin/login", async (c) => {
+  const body = await c.req.parseBody();
+  const u = body["username"] as string;
+  const p = body["password"] as string;
+  if (u === ADMIN_USER && p === ADMIN_PASS) {
+    const sid = crypto.randomUUID();
+    sessions.set(sid, true);
+    c.header("Set-Cookie", `admin_sid=${sid}; HttpOnly; SameSite=Lax; Path=/admin; Max-Age=86400`);
+    return c.redirect("/admin/queues", 302);
+  }
+  return c.redirect("/admin/login?error=1", 302);
+});
+
+app.use("/admin/*", async (c, next) => {
+  // skip login page itself
+  if (c.req.path === "/admin/login") return next();
+  const cookie = c.req.header("Cookie") || "";
+  const match = cookie.match(/admin_sid=([^;]+)/);
+  if (!match || !sessions.get(match[1])) {
+    return c.redirect("/admin/login", 303);
+  }
+  await next();
+});
+
 const serverAdapter = new HonoAdapter(serveStatic);
 createBullBoard({
   queues: [new BullMQAdapter(imageQueue)],
@@ -91,9 +170,11 @@ app.get("/api/images/:jobId/download", async (c) => {
   });
 });
 
-// Static SPA
+// SPA — root only
 app.get("/", serveStatic({ path: "./frontend/dist/index.html" }));
 app.get("/assets/*", serveStatic({ root: "./frontend/dist" }));
-app.get("/*", serveStatic({ path: "./frontend/dist/index.html" }));
+
+// catch-all: 404 untuk path yg gak dikenal
+app.notFound((c) => c.json({ error: "Not Found" }, 404));
 
 export default app;
