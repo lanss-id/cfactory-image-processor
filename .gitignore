@@ -5,3 +5,5 @@ prisma/dev.db-journal
 .hermes/
 plans/
 *.md
+results/
+uploads/

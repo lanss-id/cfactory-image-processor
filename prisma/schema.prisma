@@ -7,12 +7,24 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Generation {
-  id        String   @id @default(cuid())
-  prompt    String
-  status    String   @default("pending")
-  resultUrl String?
-  error     String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+model ImageJob {
+  id            String    @id @default(cuid())
+  originalName  String
+  originalPath  String
+  originalSize  Int
+  mimeType      String
+  status        JobStatus @default(PENDING)
+  resultPath    String?
+  resultSize    Int?
+  errorMessage  String?
+  attempts      Int       @default(0)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+enum JobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
 }
