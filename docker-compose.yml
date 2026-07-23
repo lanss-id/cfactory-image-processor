@@ -1,0 +1,48 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: imageapp
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: { context: ., dockerfile: Dockerfile.api }
+    ports: ["3000:3000"]
+    depends_on: { postgres: { condition: service_healthy }, redis: { condition: service_healthy } }
+    env_file: .env
+    volumes: [uploads:/app/uploads, results:/app/results]
+
+  worker:
+    build: { context: ., dockerfile: Dockerfile.worker }
+    depends_on: { postgres: { condition: service_healthy }, redis: { condition: service_healthy } }
+    env_file: .env
+    volumes: [uploads:/app/uploads, results:/app/results]
+
+  frontend:
+    build: { context: ./frontend, dockerfile: Dockerfile }
+    ports: ["5173:5173"]
+    depends_on: [api]
+    environment:
+      - VITE_API_URL=http://api:3000
+
+volumes:
+  pgdata:
+  uploads:
+  results:

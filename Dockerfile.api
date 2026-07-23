@@ -1,0 +1,21 @@
+FROM oven/bun:1 AS base
+WORKDIR /app
+COPY package.json bun.lock ./
+COPY prisma/ ./prisma/
+RUN bun install
+
+FROM base AS build
+COPY . .
+RUN bunx prisma generate
+RUN cd frontend && bun install && bun run build
+
+FROM oven/bun:1 AS runner
+WORKDIR /app
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/prisma ./prisma
+COPY --from=build /app/src ./src
+COPY --from=build /app/package.json ./
+COPY --from=build /app/frontend/dist ./frontend/dist
+COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
+RUN bunx prisma generate
+CMD ["bun", "run", "src/index.ts"]
