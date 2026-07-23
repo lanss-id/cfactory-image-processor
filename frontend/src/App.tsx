@@ -1,147 +1,229 @@
-import { useState, useRef, useCallback, useEffect, useMemo, type CSSProperties } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 
-const API = import.meta.env.VITE_API_URL || "/api";
-type Status = "processing" | "done" | "error";
-type Mode = "light" | "dark";
+const API = "/api";
 
-const light = {
-  bg: "#ffffff", fg: "#202020", surface: "#ffffff", cardBorder: "#202020",
-  gray: "#646464", red: "#ea2804", green: "#2b9a66",
-  inputBg: "#ffffff", btnBg: "#202020", btnFg: "#fcfcfc",
-  logoFg: "#ea2804", sectionTitle: "#646464",
+function fmt(n: number): string {
+  if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + " MB";
+  if (n >= 1024) return (n / 1024).toFixed(0) + " KB";
+  return n + " B";
+}
+
+type S = "idle" | "uploading" | "pending" | "processing" | "completed" | "failed";
+
+const Ico = {
+  upload: '<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>',
+  sun: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>',
+  moon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>',
+  check: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
 };
 
-const dark: typeof light = {
-  bg: "#202020", fg: "#ffffff", surface: "#202020", cardBorder: "#ffffff",
-  gray: "#bbbbbb", red: "#ea2804", green: "#2b9a66",
-  inputBg: "#202020", btnBg: "#ffffff", btnFg: "#202020",
-  logoFg: "#ea2804", sectionTitle: "#bbbbbb",
-};
+export default function App() {
+  const [mode, setMode] = useState<"light" | "dark">("dark");
+  const [state, setState] = useState<S>("idle");
+  const [elapsed, setElapsed] = useState(0);
+  const [origSize, setOrigSize] = useState(0);
+  const [resSize, setResSize] = useState(0);
+  const [errMsg, setErrMsg] = useState("");
+  const [preview, setPreview] = useState("");
+  const [drag, setDrag] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [polls, setPolls] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const pollRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
-function App() {
-  const [mode, setMode] = useState<Mode>("light");
-  const t = useMemo(() => mode === "light" ? light : dark, [mode]);
-  const toggleMode = () => setMode(m => m === "light" ? "dark" : "light");
-
-  const [prompt, setPrompt] = useState("");
-  const [cards, setCards] = useState<Array<{ id: string; st: Status }>>([]);
-  const ivs = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
-
-  const stopPoll = useCallback((id: string) => {
-    const iv = ivs.current.get(id);
-    if (iv) { clearInterval(iv); ivs.current.delete(id); }
+  const stop = useCallback(() => {
+    if (pollRef.current) clearTimeout(pollRef.current);
+    if (timerRef.current) clearInterval(timerRef.current);
   }, []);
 
-  const poll = useCallback(async (id: string) => {
+  useEffect(() => {
+    document.body.className = mode === "light" ? "light" : "";
+  }, [mode]);
+
+  useEffect(() => () => stop(), [stop]);
+
+  const poll = useCallback(async (id: string, d = 1000) => {
     try {
-      const res = await fetch(`${API}/generations/${id}`);
-      if (!res.ok) return;
-      const data = await res.json();
-      if (data.status === "completed" || data.status === "failed") {
-        stopPoll(id);
-        setCards(prev => prev.map(c => c.id === id ? { ...c, st: data.status === "completed" ? "done" : "error" } : c));
+      const r = await fetch(`${API}/images/${id}/status`);
+      if (!r.ok) return;
+      const j = await r.json();
+      if (j.status === "completed") {
+        setState("completed");
+        setResSize(j.resultSize || 0);
+        setPreview(`${API}/images/${id}/download`);
+        stop();
+        return;
       }
-    } catch {}
-  }, [stopPoll]);
+      if (j.status === "failed") {
+        setState("failed");
+        setErrMsg(j.errorMessage || "Processing failed");
+        stop();
+        return;
+      }
+      setState(j.status === "processing" ? "processing" : "pending");
+      setPolls(p => p + 1);
+      const next = Math.min(d * 1.5, 8000);
+      pollRef.current = setTimeout(() => poll(id, next), d);
+    } catch {
+      pollRef.current = setTimeout(() => poll(id, d), 2000);
+    }
+  }, [stop]);
 
-  const submit = async () => {
-    if (!prompt.trim()) return;
-    const p = prompt;
-    setPrompt("");
+  const upload = useCallback(async (f: File) => {
+    if (!f) return;
+    if (f.size > 20 * 1024 * 1024) {
+      setState("failed");
+      setErrMsg("File too large. Max 20MB.");
+      return;
+    }
+    if (!["image/jpeg", "image/png", "image/webp"].includes(f.type)) {
+      setState("failed");
+      setErrMsg("Unsupported format. Use JPG, PNG, or WebP.");
+      return;
+    }
+    setState("uploading");
+    setProgress(0);
+    setOrigSize(f.size);
+    setErrMsg("");
+    setPreview("");
+    setPolls(0);
+
     try {
-      const res = await fetch(`${API}/generations`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: p }),
+      const fd = new FormData();
+      fd.append("image", f);
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${API}/images`);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 100));
+      };
+      const r = await new Promise<{ jobId: string }>((res, rej) => {
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) res(JSON.parse(xhr.responseText));
+          else rej(new Error(JSON.parse(xhr.responseText).error || "Upload failed"));
+        };
+        xhr.onerror = () => rej(new Error("Upload failed"));
+        xhr.send(fd);
       });
-      if (!res.ok) return;
-      const { id } = await res.json();
-      setCards(prev => [...prev, { id, st: "processing" }]);
-      ivs.current.set(id, setInterval(() => poll(id), 2000));
-    } catch {}
-  };
+      setState("pending");
+      setElapsed(0);
+      timerRef.current = setInterval(() => setElapsed(p => p + 1), 1000);
+      poll(r.jobId);
+    } catch (e) {
+      setState("failed");
+      setErrMsg(e instanceof Error ? e.message : "Upload failed");
+    }
+  }, [poll]);
 
-  const s = useMemo(() => ({
-    page: { background: t.bg, minHeight: "100vh", fontFamily: "'Inter', system-ui, sans-serif", color: t.fg, transition: "background .3s, color .3s" } as CSSProperties,
-    inner: { maxWidth: 720, margin: "0 auto", padding: "48px 24px" } as CSSProperties,
-    header: { marginBottom: 56, display: "flex", justifyContent: "space-between", alignItems: "flex-start" } as CSSProperties,
-    logo: { fontSize: 12, fontFamily: "'JetBrains Mono', monospace", color: t.logoFg, fontWeight: 600, letterSpacing: "0.08em", marginBottom: 8, textTransform: "uppercase" } as CSSProperties,
-    title: { fontSize: 48, fontWeight: 700, lineHeight: 1, letterSpacing: "-1.8px", marginBottom: 12, color: t.fg } as CSSProperties,
-    subtitle: { fontSize: 18, fontWeight: 400, color: t.gray, lineHeight: 1.5, maxWidth: 520 } as CSSProperties,
-    toggle: { padding: "6px 16px", background: "transparent", border: `1px solid ${t.cardBorder}`, borderRadius: 9999, cursor: "pointer", fontSize: 13, fontWeight: 500, fontFamily: "'JetBrains Mono', monospace", color: t.fg, marginTop: 4, whiteSpace: "nowrap" } as CSSProperties,
-    formWrap: { background: `linear-gradient(135deg, ${t.red}, #ff6b35, #e91e63)`, borderRadius: 9999, padding: 3, marginBottom: 56 } as CSSProperties,
-    formInner: { background: t.inputBg, borderRadius: 9999, display: "flex", gap: 0, overflow: "hidden" } as CSSProperties,
-    input: { flex: 1, padding: "14px 24px", border: "none", borderRadius: 9999, fontSize: 15, color: t.fg, outline: "none", fontFamily: "'Inter', system-ui, sans-serif", background: "transparent" } as CSSProperties,
-    btn: { padding: "14px 32px", background: t.btnBg, color: t.btnFg, border: "none", borderRadius: 9999, cursor: "pointer", fontWeight: 600, fontSize: 15, fontFamily: "'Inter', system-ui, sans-serif", whiteSpace: "nowrap", flexShrink: 0, margin: 4 } as CSSProperties,
-    section: { marginTop: 64 } as CSSProperties,
-    sectionTitle: { fontSize: 14, fontFamily: "'JetBrains Mono', monospace", color: t.sectionTitle, marginBottom: 20, letterSpacing: "0.03em", textTransform: "uppercase" } as CSSProperties,
-    grid: { display: "flex", flexDirection: "column", gap: 16 } as CSSProperties,
-    card: { border: `1px solid ${t.cardBorder}`, borderRadius: 9999, padding: "20px 24px", transition: "border .3s" } as CSSProperties,
-    cardTop: { display: "flex", alignItems: "center", gap: 12, marginBottom: 16 } as CSSProperties,
-    cardId: { fontSize: 12, fontFamily: "'JetBrains Mono', monospace", color: t.gray, fontWeight: 500 } as CSSProperties,
-    img: { width: "100%", borderRadius: 9999, border: `1px solid ${t.cardBorder}` } as CSSProperties,
-    empty: { textAlign: "center", padding: "64px 0", color: t.gray, fontSize: 15, lineHeight: 1.6 } as CSSProperties,
-  }), [t]);
+  const onDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDrag(false);
+    const f = e.dataTransfer.files[0];
+    if (f && ["image/jpeg", "image/png", "image/webp"].includes(f.type)) upload(f);
+  }, [upload]);
 
-  const badgeStyle = (st: Status): CSSProperties => {
-    const bg = st === "done" ? t.green : st === "error" ? t.red : "#f0f0f0";
-    const color = st === "processing" ? t.gray : "#ffffff";
-    return { display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 14px", borderRadius: 9999, fontSize: 13, fontWeight: 600, fontFamily: "'JetBrains Mono', monospace", background: bg, color };
-  };
+  const onSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (f) upload(f);
+  }, [upload]);
+
+  const reset = useCallback(() => {
+    stop();
+    setState("idle");
+    setElapsed(0);
+    setErrMsg("");
+    setPreview("");
+    setProgress(0);
+    setResSize(0);
+    setPolls(0);
+  }, [stop]);
+
+  const pct = resSize && origSize ? Math.round((1 - resSize / origSize) * 100) : 0;
+  const color = (origSize > 0 && resSize > 0) ? (resSize < origSize ? "green" : "red") : "";
 
   return (
-    <div style={s.page}>
-      <div style={s.inner}>
-        <header style={s.header}>
-          <div>
-            <div style={s.logo}>cfactory × replicate</div>
-            <h1 style={s.title}>AI Image Generator</h1>
-            <p style={s.subtitle}>Generate images with Flux Schnell — submit a prompt and get results in seconds.</p>
-          </div>
-          <button onClick={toggleMode} style={s.toggle}>{mode === "light" ? "🌙 Dark" : "☀️ Light"}</button>
-        </header>
+    <div>
+      <button className="theme-btn" onClick={() => setMode(m => m === "light" ? "dark" : "light")}
+        dangerouslySetInnerHTML={{ __html: mode === "light" ? Ico.moon : Ico.sun }} />
 
-        <form onSubmit={e => { e.preventDefault(); submit(); }} style={s.formWrap}>
-          <div style={s.formInner}>
-            <input value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="Describe the image you want..." style={s.input} />
-            <button type="submit" style={s.btn}>Generate</button>
-          </div>
-        </form>
-
-        <div style={s.section}>
-          <div style={s.sectionTitle}>Generations</div>
-          <div style={s.grid}>
-            {cards.length === 0 && (
-              <div style={s.empty}>No generations yet. Write a prompt above.</div>
-            )}
-            {[...cards].reverse().map(({ id, st }) => (
-              <div key={id} style={s.card}>
-                <div style={s.cardTop}>
-                  <code style={s.cardId}>{id.slice(0, 8)}</code>
-                  <span style={badgeStyle(st)}>
-                    {st === "processing" && <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#646464", display: "inline-block" }} />}
-                    {{ processing: "Running", done: "Completed", error: "Failed" }[st]}
-                  </span>
-                </div>
-                {st === "done" && <ResultImage id={id} cardBorder={t.cardBorder} />}
-              </div>
-            ))}
-          </div>
+      <div className="page">
+        <div className="header">
+          <div className="logo">cfactory</div>
+          <h1 className="title">Image Processor</h1>
+          <div className="subtitle">Upload, resize, compress, and convert to WebP async.</div>
         </div>
+
+        {state === "idle" && (
+          <div className={"dropzone" + (drag ? " drag-over" : "")}
+            onDragOver={e => { e.preventDefault(); setDrag(true); }}
+            onDragLeave={() => setDrag(false)}
+            onDrop={onDrop}
+            onClick={() => inputRef.current?.click()}>
+            <span className="dropzone-icon" dangerouslySetInnerHTML={{ __html: Ico.upload }} />
+            <div className="dropzone-text">Drop image or click</div>
+            <div className="dropzone-sub">JPG, PNG, WebP (max 20MB)</div>
+            <div className="dropzone-supported">Supports aspect ratio preservation</div>
+            <input ref={inputRef} type="file" accept="image/jpeg,image/png,image/webp"
+              onChange={onSelect} hidden />
+          </div>
+        )}
+
+        {(state === "uploading" || state === "pending" || state === "processing") && (
+          <div className="card">
+            <div className="status-row">
+              <div className="spinner" />
+              <div>
+                <div className="status-text">
+                  {state === "uploading" ? `Uploading... ${progress}%` :
+                   state === "pending" ? "Queued" : "Processing"}
+                </div>
+                {state !== "uploading" && (
+                  <div className="status-sub">{elapsed}s elapsed · {polls} polls</div>
+                )}
+              </div>
+            </div>
+            <div className="progress-bar">
+              <div className="progress-fill"
+                style={{ width: state === "uploading" ? progress + "%" : Math.min((elapsed / 20) * 100, 90) + "%" }} />
+            </div>
+          </div>
+        )}
+
+        {state === "completed" && (
+          <div className="card">
+            {preview && <img src={preview} alt="Result" className="preview" />}
+            <div className="stats">
+              <div className="stat">
+                <div className="stat-label">Original</div>
+                <div className="stat-value">{fmt(origSize)}</div>
+              </div>
+              <div className="stat">
+                <div className="stat-label">Result</div>
+                <div className="stat-value">{resSize ? fmt(resSize) : "-"}</div>
+              </div>
+              <div className="stat">
+                <div className="stat-label">Reduction</div>
+                <div className={"stat-value " + color}>{origSize && resSize ? pct + "%" : "-"}</div>
+              </div>
+            </div>
+            <div className="actions">
+              <a href={preview} download className="btn btn-primary">Download WebP</a>
+              <button onClick={reset} className="btn btn-secondary">New Image</button>
+            </div>
+          </div>
+        )}
+
+        {state === "failed" && (
+          <div className="card">
+            <div className="error-box">⚠ {errMsg}</div>
+            <div className="actions">
+              <button onClick={reset} className="btn btn-primary">Try Again</button>
+            </div>
+          </div>
+        )}
+
+        <div className="footer">cfactory by <a href="https://lanss.my.id" className="footer-link">Alan</a>  Bun  Hono  Sharp  BullMQ</div>
       </div>
     </div>
   );
 }
-
-function ResultImage({ id, cardBorder }: { id: string; cardBorder: string }) {
-  const API = import.meta.env.VITE_API_URL || "/api";
-  const [src, setSrc] = useState("");
-  useEffect(() => {
-    let dead = false;
-    fetch(`${API}/generations/${id}`).then(r => r.json()).then(d => { if (!dead) setSrc(d.resultUrl); }).catch(() => {});
-    return () => { dead = true; };
-  }, [id]);
-  if (!src) return null;
-  return <img src={src} alt="" style={{ width: "100%", borderRadius: 9999, border: `1px solid ${cardBorder}` } as CSSProperties} />;
-}
-
-export default App;

@@ -1,18 +1,32 @@
 {
-  "name": "cfactory-demo",
+  "author": {
+    "name": "Alan (Maulana Kayyis Purnadiva)",
+    "email": "maulanakayyis354@gmail.com",
+    "url": "https://lanss.my.id"
+  },
+  "name": "cfactory-image-processor",
   "type": "module",
   "private": true,
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "worker": "bun run src/worker.ts",
+    "test": "vitest run"
+  },
   "devDependencies": {
-    "@types/bun": "^1.3.14"
+    "@types/bun": "^1.3.14",
+    "vitest": "^4.1.10"
   },
   "peerDependencies": {
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "@bull-board/api": "^8.2.0",
+    "@bull-board/hono": "^8.2.0",
     "@prisma/client": "5.22.0",
     "bullmq": "^5.80.9",
     "hono": "^4.12.31",
     "ioredis": "^5.11.1",
-    "prisma": "5.22.0"
+    "prisma": "5.22.0",
+    "sharp": "^0.35.3"
   }
 }
